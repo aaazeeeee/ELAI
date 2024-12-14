@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bookstore AI Assistant</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .typing-indicator {
+            animation: pulse 1s ease-in-out infinite;
+        }
+        @keyframes speaking {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.3); }
+        }
+        .speaking-indicator {
+            animation: speaking 1s ease-in-out infinite;
+        }
+        .listening-indicator {
+            animation: pulse 1s ease-in-out infinite;
+            color: green;
+        }
+        .done-speaking-indicator {
+            color: red;
+        }
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: #ef4444;
+            color: white;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            z-index: 50;
+            display: none;
+        }
+        .chat-message {
+            white-space: pre-wrap;
+            line-height: 1.8;
+            margin: 8px 0;
+        }
+        .bot-message {
+            font-family: system-ui, -apple-system, sans-serif;
+            background-color: #f8fafc;
+            border-radius: 8px;
+            padding: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .bot-message .title {
+            font-weight: 600;
+            color: #1e40af;
+            margin-bottom: 4px;
+        }
+        .bot-message .author {
+            color: #4b5563;
+            margin-bottom: 8px;
+        }
+        .bot-message .content {
+            color: #374151;
+        }
+        .bot-message .details {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #e5e7eb;
+        }
+        .suggestion-list {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px dashed #e5e7eb;
+        }
+        .suggestion-item {
+            padding: 4px 0;
+            color: #4b5563;
+        }
+    </style>
+    <script>
+        let isRecording = false;
+        let lastBotResponse = "";
+        let isPlaying = false;
+
+        async function stopTTS() {
+            await fetch("/stop_tts", {
+                method: "POST"
+            });
+            isPlaying = false;
+        }
+
+        function formatBotMessage(message) {
+            // Split message into lines
+            const lines = message.split('\n');
+            let formattedHtml = '<div class="bot-message">';
+            
+            if (lines[0].includes('Book:')) {
+                // Format book details
+                formattedHtml += `<div class="title">${lines[0]}</div>`;
+                formattedHtml += `<div class="content">`;
+                formattedHtml += lines.slice(1).join('<br>');
+                formattedHtml += '</div>';
+            } else if (message.includes('Did you mean')) {
+                // Format suggestions
+                const [intro, ...suggestions] = message.split('\n\n');
+                formattedHtml += `<div class="content">${intro}</div>`;
+                formattedHtml += '<div class="suggestion-list">';
+                formattedHtml += suggestions.join('<br>').replace(/•/g, '→');
+                formattedHtml += '</div>';
+            } else {
+                // Format regular messages
+                formattedHtml += `<div class="content">${message}</div>`;
+            }
+            
+            formattedHtml += '</div>';
+            return formattedHtml;
+        }
+
+        async function sendMessage(message) {
+            const userMessage = message || document.getElementById("userMessage").value;
+            if (!userMessage) return;
+
+            const chatbox = document.getElementById("chatbox");
+
+            // Add user message
+            chatbox.innerHTML += `
+                <div class="flex justify-end mb-4">
+                    <div class="bg-blue-500 text-white rounded-lg px-4 py-2 max-w-[80%]">
+                        <div class="chat-message">${userMessage}</div>
+                    </div>
+                </div>
+            `;
+
+            // Add typing indicator
+            const typingId = 'typing-' + Date.now();
+            chatbox.innerHTML += `
+                <div id="${typingId}" class="flex items-center gap-2 text-gray-500 mb-4">
+                    <div class="typing-indicator flex gap-1">
+                        <div class="w-2 h-2 bg-gray-400 rounded-full"></div>
+                        <div class="w-2 h-2 bg-gray-400 rounded-full"></div>
+                        <div class="w-2 h-2 bg-gray-400 rounded-full"></div>
+                    </div>
+                </div>
+            `;
+
+            chatbox.scrollTop = chatbox.scrollHeight;
+
+            const response = await fetch("/chat", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ message: userMessage })
+            });
+
+            const data = await response.json();
+            lastBotResponse = data.response;
+
+            // Remove typing indicator and add bot response
+            document.getElementById(typingId).remove();
+            chatbox.innerHTML += `
+                <div class="flex mb-4">
+                    <div class="bg-gray-200 rounded-lg px-4 py-2 max-w-[80%]">
+                        <div class="chat-message">${formatBotMessage(lastBotResponse)}</div>
+                    </div>
+                </div>
+            `;
+            
+            chatbox.scrollTop = chatbox.scrollHeight;
+            document.getElementById("userMessage").value = "";
+
+            // Play the response automatically
+            await fetch("/tts", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ response: lastBotResponse })
+            });
+        }
+
+        async function recordAudio() {
+            const micButton = document.getElementById("micButton");
+            // const recordingIndicator = document.getElementById("recordingIndicator");
+            const chatbox = document.getElementById("chatbox");
+            const toast = document.getElementById("toast");
+            
+            // If recording, stop it and TTS
+            if (isRecording || isPlaying) {
+                isRecording = false;
+                if (isPlaying) {
+                    await stopTTS();
+                }
+                micButton.classList.remove("bg-red-500", "speaking-indicator");
+                micButton.classList.add("bg-purple-500");
+                recordingIndicator.classList.add("hidden");
+                return;
+            }
+
+            isRecording = true;
+            micButton.classList.add("bg-red-500", "speaking-indicator");
+            micButton.classList.remove("bg-purple-500");
+           
+            const response = await fetch("/stt");
+            const data = await response.json();
+
+            // Stop recording indicators
+            isRecording = false;
+            micButton.classList.remove("bg-red-500", "speaking-indicator");
+            micButton.classList.add("bg-purple-500");
+            recordingIndicator.classList.add("hidden");
+
+            if (!data.transcription || data.transcription === "No speech detected" || data.transcription === "Sorry, I could not understand the audio." || data.transcription.trim() === "") {
+                // Show toast
+                toast.style.display = "block";
+                setTimeout(() => toast.style.display = "none", 3000);
+                return;
+            }
+
+            // Display transcribed message
+            chatbox.innerHTML += `
+                <div class="flex justify-end mb-4">
+                    <div class="bg-blue-500 text-white rounded-lg px-4 py-2 max-w-[80%]">
+                        <div class="chat-message">${data.transcription}</div>
+                    </div>
+                </div>
+            `;
+            chatbox.scrollTop = chatbox.scrollHeight;
+            
+            // Show processing indicator
+            // recordingIndicator.innerHTML = '<span class="listening-indicator">Processing...</span>';
+            recordingIndicator.classList.remove("hidden");
+            
+            // Send the message to chat
+            const chatResponse = await fetch("/chat", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ message: data.transcription })
+            });
+
+            const chatData = await chatResponse.json();
+            lastBotResponse = chatData.response;
+
+            // Display bot response
+            chatbox.innerHTML += `
+                <div class="flex mb-4">
+                    <div class="bg-gray-200 rounded-lg px-4 py-2 max-w-[80%]">
+                        <div class="chat-message">${formatBotMessage(lastBotResponse)}</div>
+                    </div>
+                </div>
+            `;
+            chatbox.scrollTop = chatbox.scrollHeight;
+            
+            // recordingIndicator.innerHTML = '<span class="done-speaking-indicator">Done</span>';
+            setTimeout(() => recordingIndicator.classList.add("hidden"), 2000);
+
+            // Play the response automatically
+            isPlaying = true;
+            await fetch("/tts", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ response: lastBotResponse })
+            });
+            isPlaying = false;
+        }
+    </script>
+</head>
+<body class="bg-slate-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-3xl">
+        <div class="flex items-center gap-3 mb-8">
+            <div class="w-12 h-12 rounded-full bg-blue-500 flex items-center justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+                </svg>
+            </div>
+            <h1 class="text-2xl font-bold text-gray-800">UC Bookstore AI Assistant</h1>
+        </div>
+
+        <div id="chatbox" class="bg-white rounded-lg shadow-lg mb-6 h-[500px] overflow-y-auto p-4 space-y-4">
+            <div class="flex items-center gap-2 text-gray-500 italic">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+                <span>How can I assist you today?</span>
+            </div>
+        </div>
+
+        <div class="flex gap-4 relative">
+            <div id="recordingIndicator" class="hidden absolute left-4 top-1/2 transform -translate-y-1/2 flex items-center gap-2">
+                <!-- Indicator content will be dynamically updated -->
+            </div>
+            <button id="micButton" onclick="recordAudio()" 
+                class="bg-purple-500 hover:bg-purple-600 text-white rounded-lg px-4 py-2 transition-colors flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                </svg>
+            </button>
+        </div>
+    </div>
+    <div id="toast" class="toast">Failed to recognize your voice</div>
+</body>
+</html>
